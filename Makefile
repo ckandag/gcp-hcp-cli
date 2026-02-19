@@ -1,4 +1,4 @@
-.PHONY: build test lint clean help
+.PHONY: build test lint clean help release
 
 MODULE  := github.com/ckandag/gcp-hcp-cli
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -24,3 +24,10 @@ lint: ## Run go vet
 
 clean: ## Remove build artifacts
 	rm -rf bin/
+
+release: ## Tag and push a release (usage: make release v=0.2.0)
+	@if [ -z "$(v)" ]; then echo "Usage: make release v=0.2.0"; exit 1; fi
+	@echo "Tagging v$(v)..."
+	git tag -a "v$(v)" -m "Release v$(v)"
+	git push origin "v$(v)"
+	@echo "Pushed v$(v) — GitHub Actions will create the release."
