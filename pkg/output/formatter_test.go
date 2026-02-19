@@ -259,7 +259,7 @@ func TestPrintAnalysis_WithStructuredJSON(t *testing.T) {
 			"pod_phase":          "Running",
 			"events_count":       float64(3),
 			"log_lines_analyzed": float64(50),
-			"ai_analysis":       `{"Summary":"Pod is healthy.","Severity":"LOW","Errors Detected":[],"Root Cause Analysis":"None","Recommended Actions":["Continue monitoring"]}`,
+			"ai_analysis":       `{"summary":"Pod is healthy.","severity":"LOW","errors_detected":[],"root_cause":"None","recommended_actions":["Continue monitoring"]}`,
 		},
 	}
 	if err := PrintAnalysis(&buf, data, "test-ns"); err != nil {

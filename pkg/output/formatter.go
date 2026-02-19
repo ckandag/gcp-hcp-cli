@@ -560,32 +560,32 @@ func renderStructuredAnalysis(w io.Writer, raw string) bool {
 		return false
 	}
 
-	if _, ok := parsed["Summary"]; !ok {
+	if _, ok := parsed["summary"]; !ok {
 		return false
 	}
 
-	severity := stringVal(parsed, "Severity")
+	severity := stringVal(parsed, "severity")
 	if severity != "" {
 		fmt.Fprintf(w, "  Severity:  %s\n\n", severity)
 	}
 
-	if summary := stringVal(parsed, "Summary"); summary != "" {
+	if summary := stringVal(parsed, "summary"); summary != "" {
 		printSection(w, "Summary", summary)
 	}
 
-	if errors := listVal(parsed, "Errors Detected"); len(errors) > 0 {
+	if errors := listVal(parsed, "errors_detected"); len(errors) > 0 {
 		printListSection(w, "Errors Detected", errors)
-	} else if errStr := stringVal(parsed, "Errors Detected"); errStr != "" {
+	} else if errStr := stringVal(parsed, "errors_detected"); errStr != "" {
 		printSection(w, "Errors Detected", errStr)
 	}
 
-	if rca := stringVal(parsed, "Root Cause Analysis"); rca != "" {
+	if rca := stringVal(parsed, "root_cause"); rca != "" {
 		printSection(w, "Root Cause Analysis", rca)
 	}
 
-	if actions := listVal(parsed, "Recommended Actions"); len(actions) > 0 {
+	if actions := listVal(parsed, "recommended_actions"); len(actions) > 0 {
 		printNumberedSection(w, "Recommended Actions", actions)
-	} else if actStr := stringVal(parsed, "Recommended Actions"); actStr != "" {
+	} else if actStr := stringVal(parsed, "recommended_actions"); actStr != "" {
 		printSection(w, "Recommended Actions", actStr)
 	}
 

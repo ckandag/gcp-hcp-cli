@@ -123,7 +123,7 @@ main:
     - validate_resource_type:
         switch:
           - condition: ${not(resource_type in api_routes)}
-            raise: '${"Unsupported resource type: " + resource_type + ". Supported: pods, deployments, services, configmaps, nodes, namespaces, hostedclusters, nodepools, hostedcontrolplanes"}'
+            raise: '${"Unsupported resource type: " + resource_type + ". Supported: pods, deployments, statefulsets, daemonsets, replicasets, services, configmaps, nodes, namespaces, persistentvolumes, persistentvolumeclaims, hostedclusters, nodepools, hostedcontrolplanes, machinedeployments, machines, machinesets, gcpmachines, gcpmachinetemplates"}'
 
     - get_route_config:
         assign:
@@ -149,14 +149,25 @@ main:
               - resource_path: '${api_prefix + "/namespaces/" + namespace + "/" + resource_type + "/" + name}'
 
     - get_resource:
-        call: gke.request
-        args:
-          project: ${project}
-          cluster_id: ${cluster_id}
-          location: ${location}
-          method: "GET"
-          path: ${resource_path}
-        result: resource_response
+        try:
+          call: gke.request
+          args:
+            project: ${project}
+            cluster_id: ${cluster_id}
+            location: ${location}
+            method: "GET"
+            path: ${resource_path}
+          result: resource_response
+        except:
+          as: e
+          steps:
+            - return_describe_error:
+                return:
+                  status: "error"
+                  resource_type: ${resource_type}
+                  namespace: ${if(is_namespaced, namespace, null)}
+                  name: ${name}
+                  error: ${e.message}
 
     # Build events query based on resource type
     - build_events_path:
@@ -164,11 +175,11 @@ main:
           # For namespaced resources, query events in the same namespace
           - condition: ${is_namespaced}
             assign:
-              - events_path: '${"/api/v1/namespaces/" + namespace + "/events?fieldSelector=involvedObject.name=" + name + ",involvedObject.kind=" + resource_kind}'
+              - events_path: '${"/api/v1/namespaces/" + namespace + "/events?limit=20&fieldSelector=involvedObject.name=" + name + ",involvedObject.kind=" + resource_kind}'
           # For cluster-scoped resources (nodes, namespaces), query cluster-wide events
           - condition: true
             assign:
-              - events_path: '${"/api/v1/events?fieldSelector=involvedObject.name=" + name + ",involvedObject.kind=" + resource_kind}'
+              - events_path: '${"/api/v1/events?limit=20&fieldSelector=involvedObject.name=" + name + ",involvedObject.kind=" + resource_kind}'
 
     - get_events:
         try:
