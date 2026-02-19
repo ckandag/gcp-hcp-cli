@@ -1,0 +1,66 @@
+# Approval Workflow - Demonstrates callback-based pause/resume
+#
+# A sample workflow that pauses execution and waits for external approval
+# via a callback. Use this to test the 'wf status' callback display and
+# 'wf resume' command.
+#
+# Usage:
+#   # Start the workflow (it will pause and wait for approval)
+#   wf run approval --async
+#
+#   # Check status (shows pending callback)
+#   wf status approval <exec-id>
+#
+#   # Resume with approval
+#   wf resume approval <exec-id> --data '{"approved": true}'
+#
+#   # Or resume with rejection
+#   wf resume approval <exec-id> --data '{"approved": false, "reason": "not ready"}'
+#
+# Parameters:
+#   - action (optional): Description of what needs approval (default: "manual action")
+#   - timeout (optional): How long to wait for approval in seconds (default: 3600)
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - action: ${default(map.get(args, "action"), "manual action")}
+          - timeout_seconds: ${default(map.get(args, "timeout"), 3600)}
+
+    - create_callback:
+        call: events.create_callback_endpoint
+        args:
+          http_callback_method: POST
+        result: callback_details
+
+    - await_approval:
+        call: events.await_callback
+        args:
+          callback: ${callback_details}
+          timeout: ${timeout_seconds}
+        result: callback_request
+
+    - extract_decision:
+        assign:
+          - approved: ${default(map.get(callback_request.http_request.body, "approved"), false)}
+          - reason: ${default(map.get(callback_request.http_request.body, "reason"), "")}
+
+    - check_approval:
+        switch:
+          - condition: ${approved == true}
+            steps:
+              - return_approved:
+                  return:
+                    status: "approved"
+                    action: ${action}
+                    approved_at: ${sys.now()}
+          - condition: ${approved == false}
+            steps:
+              - return_rejected:
+                  return:
+                    status: "rejected"
+                    action: ${action}
+                    reason: ${reason}
+                    rejected_at: ${sys.now()}

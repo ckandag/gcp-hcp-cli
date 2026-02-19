@@ -1,0 +1,207 @@
+# Get/List Kubernetes Resources Workflow
+#
+# A generic workflow to get or list Kubernetes resources.
+# Supports all standard Kubernetes resources and HyperShift custom resources.
+# This is the kubectl-equivalent 'get' command for Zero Operator Access.
+#
+# Usage:
+#   # List all pods in a namespace
+#   gcloud workflows run get \
+#     --project=<project-id> \
+#     --location=<region> \
+#     --data='{"resource_type": "pods", "namespace": "default"}'
+#
+#   # Get a specific pod
+#   gcloud workflows run get \
+#     --project=<project-id> \
+#     --location=<region> \
+#     --data='{"resource_type": "pods", "namespace": "default", "name": "my-pod"}'
+#
+# Parameters:
+#   - resource_type (required): pods, deployments, services, configmaps, events, nodes, namespaces,
+#                               hostedclusters, nodepools, hostedcontrolplanes
+#   - namespace (optional): Required for namespaced resources (default: "default")
+#   - name (optional): Specific resource name (omit for list)
+#   - label_selector (optional): Filter by labels (e.g., "app=nginx")
+#
+# Note: List operations are limited to 20 items to prevent Cloud Workflows memory exhaustion.
+#       If more resources exist, the response includes a 'note' field. The 20-item sample is
+#       sufficient for diagnosis and troubleshooting.
+
+main:
+  params: [args]
+  steps:
+    - validate_inputs:
+        switch:
+          - condition: ${not("resource_type" in args)}
+            raise: "Missing required parameter: resource_type"
+
+    - init:
+        assign:
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - cluster_id: ${sys.get_env("CLUSTER_NAME")}
+          - location: ${sys.get_env("CLUSTER_LOCATION")}
+          - resource_type: ${args.resource_type}
+          - namespace: ${default(map.get(args, "namespace"), "default")}
+          - name: ${default(map.get(args, "name"), "")}
+          - label_selector: ${default(map.get(args, "label_selector"), "")}
+
+    # Resource routing table - maps resource types to API paths
+    - setup_routing:
+        assign:
+          # Core API resources
+          - api_routes:
+              pods:
+                api_prefix: "/api/v1"
+                namespaced: true
+              services:
+                api_prefix: "/api/v1"
+                namespaced: true
+              configmaps:
+                api_prefix: "/api/v1"
+                namespaced: true
+              events:
+                api_prefix: "/api/v1"
+                namespaced: true
+              nodes:
+                api_prefix: "/api/v1"
+                namespaced: false
+              namespaces:
+                api_prefix: "/api/v1"
+                namespaced: false
+              persistentvolumes:
+                api_prefix: "/api/v1"
+                namespaced: false
+              persistentvolumeclaims:
+                api_prefix: "/api/v1"
+                namespaced: true
+              # Apps API resources
+              deployments:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+              statefulsets:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+              daemonsets:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+              replicasets:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+              # HyperShift resources
+              hostedclusters:
+                api_prefix: "/apis/hypershift.openshift.io/v1beta1"
+                namespaced: true
+              nodepools:
+                api_prefix: "/apis/hypershift.openshift.io/v1beta1"
+                namespaced: true
+              hostedcontrolplanes:
+                api_prefix: "/apis/hypershift.openshift.io/v1beta1"
+                namespaced: true
+              # Cluster API resources
+              machinedeployments:
+                api_prefix: "/apis/cluster.x-k8s.io/v1beta1"
+                namespaced: true
+              machines:
+                api_prefix: "/apis/cluster.x-k8s.io/v1beta1"
+                namespaced: true
+              machinesets:
+                api_prefix: "/apis/cluster.x-k8s.io/v1beta1"
+                namespaced: true
+              # Cluster API infrastructure provider resources (GCP)
+              gcpmachines:
+                api_prefix: "/apis/infrastructure.cluster.x-k8s.io/v1beta1"
+                namespaced: true
+              gcpmachinetemplates:
+                api_prefix: "/apis/infrastructure.cluster.x-k8s.io/v1beta1"
+                namespaced: true
+
+    - validate_resource_type:
+        switch:
+          - condition: ${not(resource_type in api_routes)}
+            raise: '${"Unsupported resource type: " + resource_type + ". Supported: pods, deployments, services, configmaps, events, nodes, namespaces, hostedclusters, nodepools, hostedcontrolplanes"}'
+
+    - get_route_config:
+        assign:
+          - route: ${api_routes[resource_type]}
+          - is_namespaced: ${route.namespaced}
+          - api_prefix: ${route.api_prefix}
+
+    - validate_namespace:
+        switch:
+          - condition: ${is_namespaced and namespace == ""}
+            raise: '${"Resource type " + resource_type + " requires a namespace"}'
+
+    - build_path:
+        switch:
+          # Cluster-scoped resource - no namespace in path
+          - condition: ${not(is_namespaced)}
+            assign:
+              - base_path: '${api_prefix + "/" + resource_type}'
+          # Namespaced resource
+          - condition: true
+            assign:
+              - base_path: '${api_prefix + "/namespaces/" + namespace + "/" + resource_type}'
+
+    - add_name_to_path:
+        switch:
+          - condition: ${name != ""}
+            assign:
+              - resource_path: '${base_path + "/" + name}'
+          - condition: true
+            assign:
+              - resource_path: ${base_path}
+
+    # Build query parameters for list operations
+    # Cloud Workflows has ~256KB memory limit - large responses cause MemoryLimitExceededError
+    # Adding limit=20 prevents memory exhaustion when listing resources in large namespaces
+    # (20 pods with full metadata ≈ 160KB, safely under the 256KB limit)
+    - build_query_params:
+        switch:
+          # List operation with label selector
+          - condition: ${label_selector != "" and name == ""}
+            assign:
+              - resource_path: '${resource_path + "?limit=20&labelSelector=" + text.url_encode(label_selector)}'
+          # List operation without label selector
+          - condition: ${name == ""}
+            assign:
+              - resource_path: '${resource_path + "?limit=20"}'
+          # Single resource fetch - no query params needed
+          - condition: true
+            next: get_resource
+
+    - get_resource:
+        call: gke.request
+        args:
+          project: ${project}
+          cluster_id: ${cluster_id}
+          location: ${location}
+          method: "GET"
+          path: ${resource_path}
+        result: resource_response
+
+    # Format result for list vs single resource
+    - format_result:
+        switch:
+          - condition: ${name != ""}
+            next: return_single_resource
+          - condition: true
+            next: return_resource_list
+
+    - return_single_resource:
+        return:
+          status: "success"
+          resource_type: ${resource_type}
+          namespace: ${if(is_namespaced, namespace, null)}
+          name: ${name}
+          resource: ${resource_response.body}
+
+    - return_resource_list:
+        return:
+          status: "success"
+          resource_type: ${resource_type}
+          namespace: ${if(is_namespaced, namespace, null)}
+          count: ${len(resource_response.body.items)}
+          # Note: Response limited to first 20 items for performance. This sample is sufficient for diagnosis.
+          note: ${if(map.get(resource_response.body.metadata, "continue") != null, "Showing first 20 items (more exist). This sample is sufficient for diagnosis.", null)}
+          items: ${resource_response.body.items}
