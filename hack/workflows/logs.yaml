@@ -1,0 +1,171 @@
+# Get Pod Logs Workflow
+#
+# A workflow to retrieve raw pod logs without AI analysis.
+# This is the kubectl-equivalent 'logs' command for Zero Operator Access.
+#
+# Usage:
+#   # Get logs from a pod
+#   gcloud workflows run logs \
+#     --project=<project-id> \
+#     --location=<region> \
+#     --data='{"namespace": "default", "pod": "my-pod"}'
+#
+#   # Get logs from a specific container
+#   gcloud workflows run logs \
+#     --project=<project-id> \
+#     --location=<region> \
+#     --data='{"namespace": "default", "pod": "my-pod", "container": "sidecar"}'
+#
+#   # Get logs from previous container instance (useful for crashloops)
+#   gcloud workflows run logs \
+#     --project=<project-id> \
+#     --location=<region> \
+#     --data='{"namespace": "default", "pod": "my-pod", "previous": true}'
+#
+# Parameters:
+#   - namespace (required): Kubernetes namespace
+#   - pod (required): Pod name
+#   - container (optional): Specific container name (defaults to first container)
+#   - tail_lines (optional): Number of log lines to fetch (default: 100)
+#   - previous (optional): Get logs from previous container instance (default: false)
+#   - since_seconds (optional): Return logs newer than this many seconds
+
+main:
+  params: [args]
+  steps:
+    - validate_inputs:
+        switch:
+          - condition: ${not("namespace" in args)}
+            raise: "Missing required parameter: namespace"
+          - condition: ${not("pod" in args)}
+            raise: "Missing required parameter: pod"
+
+    - init:
+        assign:
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - cluster_id: ${sys.get_env("CLUSTER_NAME")}
+          - location: ${sys.get_env("CLUSTER_LOCATION")}
+          - namespace: ${args.namespace}
+          - pod: ${args.pod}
+          - container: ${default(map.get(args, "container"), "")}
+          - tail_lines: ${default(map.get(args, "tail_lines"), 100)}
+          - previous: ${default(map.get(args, "previous"), false)}
+          - since_seconds: ${default(map.get(args, "since_seconds"), 0)}
+
+    - build_log_path:
+        assign:
+          - base_path: '${"/api/v1/namespaces/" + namespace + "/pods/" + pod + "/log"}'
+          - query_params: '${"?tailLines=" + string(tail_lines)}'
+
+    - add_previous_param:
+        switch:
+          - condition: ${previous == true}
+            assign:
+              - query_params: '${query_params + "&previous=true"}'
+
+    - add_container_param:
+        switch:
+          - condition: ${container != ""}
+            assign:
+              - query_params: '${query_params + "&container=" + text.url_encode(container)}'
+
+    - add_since_param:
+        switch:
+          - condition: ${since_seconds > 0}
+            assign:
+              - query_params: '${query_params + "&sinceSeconds=" + string(since_seconds)}'
+
+    - build_final_path:
+        assign:
+          - log_path: '${base_path + query_params}'
+
+    - get_logs:
+        try:
+          call: gke.request
+          args:
+            project: ${project}
+            cluster_id: ${cluster_id}
+            location: ${location}
+            method: "GET"
+            path: ${log_path}
+          result: logs_response
+        except:
+          as: e
+          steps:
+            # If no container was specified, the pod likely has multiple
+            # containers.  Fetch the pod spec to find the first container
+            # name and retry automatically.
+            - check_if_container_retry:
+                switch:
+                  - condition: ${container == ""}
+                    next: resolve_container
+                  - condition: true
+                    next: return_error
+
+    - logs_fetched_ok:
+        next: return_result
+
+    # --- Multi-container: return available names for agent resolution ---
+    - resolve_container:
+        try:
+          call: gke.request
+          args:
+            project: ${project}
+            cluster_id: ${cluster_id}
+            location: ${location}
+            method: "GET"
+            path: '${"/api/v1/namespaces/" + namespace + "/pods/" + pod}'
+          result: pod_response
+        except:
+          as: pod_err
+          steps:
+            - pod_fetch_failed:
+                return:
+                  status: "error"
+                  namespace: ${namespace}
+                  pod: ${pod}
+                  container: null
+                  error: "Failed to fetch logs and could not resolve container names. Check pod name and namespace."
+                  previous: ${previous}
+
+    - extract_container_names:
+        assign:
+          - container_names: []
+
+    - collect_container_names:
+        for:
+          value: c
+          in: ${pod_response.body.spec.containers}
+          steps:
+            - append_name:
+                assign:
+                  - container_names: ${list.concat(container_names, c.name)}
+
+    - return_container_required:
+        return:
+          status: "container_required"
+          namespace: ${namespace}
+          pod: ${pod}
+          available_containers: ${container_names}
+          previous: ${previous}
+          tail_lines: ${tail_lines}
+
+    - return_result:
+        return:
+          status: "success"
+          namespace: ${namespace}
+          pod: ${pod}
+          container: ${container}
+          previous: ${previous}
+          tail_lines: ${tail_lines}
+          logs: ${logs_response.body}
+
+    # --- Error when container was already specified ---
+    - return_error:
+        return:
+          status: "error"
+          namespace: ${namespace}
+          pod: ${pod}
+          container: ${container}
+          error: '${"Failed to fetch logs from container " + container + ". Check pod name, namespace, and container name."}'
+          previous: ${previous}

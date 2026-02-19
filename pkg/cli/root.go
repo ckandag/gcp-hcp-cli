@@ -1,0 +1,76 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/ckandag/gcp-hcp-cli/pkg/ops"
+	"github.com/ckandag/gcp-hcp-cli/pkg/config"
+
+	"github.com/spf13/cobra"
+)
+
+var (
+	project      string
+	region       string
+	outputFormat string
+	configPath   string
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "gcphcp",
+	Short: "CLI for managing GCP Hosted Control Plane clusters",
+	Long: `gcphcp is the unified CLI for managing GCP Hosted Control Plane (HCP) clusters.
+
+It provides commands for cluster lifecycle, infrastructure management,
+and operational debugging of hosted control plane clusters on GCP.
+
+Configuration priority: CLI flags > environment variables > config file (~/.gcphcp/config.yaml).`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return loadConfig(cmd)
+	},
+}
+
+func loadConfig(cmd *cobra.Command) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	if project == "" && cfg.Project != "" {
+		project = cfg.Project
+	}
+	if region == "" && cfg.Region != "" {
+		region = cfg.Region
+	}
+	if !cmd.Flags().Changed("output") && cfg.Output != "" {
+		outputFormat = cfg.Output
+	}
+
+	return nil
+}
+
+func init() {
+	rootCmd.PersistentFlags().StringVar(&project, "project", os.Getenv("GCPHCP_PROJECT"), "GCP project ID (env: GCPHCP_PROJECT)")
+	rootCmd.PersistentFlags().StringVar(&region, "region", os.Getenv("GCPHCP_REGION"), "GCP region (env: GCPHCP_REGION)")
+	rootCmd.PersistentFlags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json, yaml")
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Config file path (default: ~/.gcphcp/config.yaml)")
+
+	// Register the ops subtree. Self-contained so it can be extracted as a plugin.
+	rootCmd.AddCommand(ops.NewOpsCmd())
+}
+
+// Execute runs the root command.
+func Execute() error {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return err
+	}
+	return nil
+}
+
+func getProject() string      { return project }
+func getRegion() string       { return region }
+func getOutputFormat() string { return outputFormat }

@@ -1,0 +1,167 @@
+package ops
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/ckandag/gcp-hcp-cli/pkg/output"
+	"github.com/ckandag/gcp-hcp-cli/pkg/gcp/workflows"
+	"github.com/spf13/cobra"
+)
+
+// resourceTypeExpand expands short aliases to full resource types.
+var resourceTypeExpand = map[string]string{
+	"hc":     "hostedclusters",
+	"np":     "nodepools",
+	"hcp":    "hostedcontrolplanes",
+	"deploy": "deployments",
+	"sts":    "statefulsets",
+	"rs":     "replicasets",
+	"ds":     "daemonsets",
+	"svc":    "services",
+	"cm":     "configmaps",
+	"ep":     "endpoints",
+	"ns":     "namespaces",
+	"pvc":    "persistentvolumeclaims",
+	"pv":     "persistentvolumes",
+	"sa":     "serviceaccounts",
+	"po":     "pods",
+	"ev":     "events",
+	"no":     "nodes",
+
+	"pod":                   "pods",
+	"deployment":            "deployments",
+	"statefulset":           "statefulsets",
+	"replicaset":            "replicasets",
+	"daemonset":             "daemonsets",
+	"service":               "services",
+	"configmap":             "configmaps",
+	"endpoint":              "endpoints",
+	"namespace":             "namespaces",
+	"node":                  "nodes",
+	"event":                 "events",
+	"serviceaccount":        "serviceaccounts",
+	"hostedcluster":         "hostedclusters",
+	"nodepool":              "nodepools",
+	"hostedcontrolplane":    "hostedcontrolplanes",
+	"persistentvolumeclaim": "persistentvolumeclaims",
+	"persistentvolume":      "persistentvolumes",
+}
+
+func newGetCmd() *cobra.Command {
+	var (
+		namespace     string
+		labelSelector string
+		timeout       time.Duration
+	)
+
+	cmd := &cobra.Command{
+		Use:   "get <resource-type> [resource-name]",
+		Short: "Get Kubernetes resources via Cloud Workflows",
+		Long: `Get Kubernetes resources from a GKE cluster using the get workflow.
+Works like kubectl get but runs through Cloud Workflows.
+
+Examples:
+  # List all pods in a namespace
+  gcphcp ops get pods -n hypershift
+
+  # Get a specific pod
+  gcphcp ops get pods my-pod -n hypershift
+
+  # List all hosted clusters
+  gcphcp ops get hostedclusters -n clusters
+
+  # Short aliases work too
+  gcphcp ops get hc -n clusters
+  gcphcp ops get deploy -n clusters-test-pd-test-pd
+
+  # Filter by label selector
+  gcphcp ops get pods -n hypershift -l app=nginx
+
+  # List cluster-scoped resources
+  gcphcp ops get nodes
+  gcphcp ops get namespaces`,
+
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resourceType := args[0]
+			if expanded, ok := resourceTypeExpand[resourceType]; ok {
+				resourceType = expanded
+			}
+
+			var resourceName string
+			if len(args) > 1 {
+				resourceName = args[1]
+			}
+
+			project, _ := cmd.Flags().GetString("project")
+			region, _ := cmd.Flags().GetString("region")
+			outputFormat, _ := cmd.Flags().GetString("output")
+
+			if project == "" {
+				return fmt.Errorf("--project is required (or set GCPHCP_PROJECT)")
+			}
+			if region == "" {
+				return fmt.Errorf("--region is required (or set GCPHCP_REGION)")
+			}
+
+			data := map[string]interface{}{
+				"resource_type": resourceType,
+			}
+			if namespace != "" {
+				data["namespace"] = namespace
+			}
+			if resourceName != "" {
+				data["name"] = resourceName
+			}
+			if labelSelector != "" {
+				data["label_selector"] = labelSelector
+			}
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+
+			client, err := workflows.NewClient(ctx, project, region)
+			if err != nil {
+				return fmt.Errorf("creating client: %w", err)
+			}
+			defer client.Close()
+
+			fmt.Fprintf(os.Stderr, "Getting %s", resourceType)
+			if resourceName != "" {
+				fmt.Fprintf(os.Stderr, " %s", resourceName)
+			}
+			if namespace != "" {
+				fmt.Fprintf(os.Stderr, " (ns: %s)", namespace)
+			}
+			if labelSelector != "" {
+				fmt.Fprintf(os.Stderr, " (selector: %s)", labelSelector)
+			}
+			fmt.Fprintln(os.Stderr)
+
+			_, result, err := client.Run(ctx, "get", data)
+			if err != nil {
+				return fmt.Errorf("executing workflow: %w", err)
+			}
+
+			if result.State == "FAILED" {
+				return fmt.Errorf("workflow failed: %s", result.Error)
+			}
+
+			format := output.ParseFormat(outputFormat)
+			if format == output.FormatJSON {
+				return output.PrintJSON(os.Stdout, result.Result)
+			}
+
+			return output.PrintResourceTable(os.Stdout, result.Result, resourceType)
+		},
+	}
+
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Kubernetes namespace")
+	cmd.Flags().StringVarP(&labelSelector, "selector", "l", "", "Label selector (e.g. app=nginx)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Maximum time to wait for workflow completion")
+
+	return cmd
+}

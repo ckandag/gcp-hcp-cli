@@ -1,0 +1,237 @@
+# Describe Kubernetes Resource Workflow
+#
+# A workflow that provides detailed resource information including related events.
+# This is the kubectl-equivalent 'describe' command for Zero Operator Access.
+#
+# Usage:
+#   gcloud workflows run describe \
+#     --project=<project-id> \
+#     --location=<region> \
+#     --data='{"resource_type": "pods", "namespace": "default", "name": "my-pod"}'
+#
+# Parameters:
+#   - resource_type (required): pods, deployments, services, configmaps, nodes, namespaces,
+#                               hostedclusters, nodepools, hostedcontrolplanes
+#   - namespace (optional): Required for namespaced resources (default: "default")
+#   - name (required): Specific resource name to describe
+
+main:
+  params: [args]
+  steps:
+    - validate_inputs:
+        switch:
+          - condition: ${not("resource_type" in args)}
+            raise: "Missing required parameter: resource_type"
+          - condition: ${not("name" in args)}
+            raise: "Missing required parameter: name"
+
+    - init:
+        assign:
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - cluster_id: ${sys.get_env("CLUSTER_NAME")}
+          - location: ${sys.get_env("CLUSTER_LOCATION")}
+          - resource_type: ${args.resource_type}
+          - namespace: ${default(map.get(args, "namespace"), "default")}
+          - name: ${args.name}
+
+    # Resource routing table - maps resource types to API paths
+    - setup_routing:
+        assign:
+          # Core API resources
+          - api_routes:
+              pods:
+                api_prefix: "/api/v1"
+                namespaced: true
+                kind: "Pod"
+              services:
+                api_prefix: "/api/v1"
+                namespaced: true
+                kind: "Service"
+              configmaps:
+                api_prefix: "/api/v1"
+                namespaced: true
+                kind: "ConfigMap"
+              nodes:
+                api_prefix: "/api/v1"
+                namespaced: false
+                kind: "Node"
+              namespaces:
+                api_prefix: "/api/v1"
+                namespaced: false
+                kind: "Namespace"
+              persistentvolumes:
+                api_prefix: "/api/v1"
+                namespaced: false
+                kind: "PersistentVolume"
+              persistentvolumeclaims:
+                api_prefix: "/api/v1"
+                namespaced: true
+                kind: "PersistentVolumeClaim"
+              # Apps API resources
+              deployments:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+                kind: "Deployment"
+              statefulsets:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+                kind: "StatefulSet"
+              daemonsets:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+                kind: "DaemonSet"
+              replicasets:
+                api_prefix: "/apis/apps/v1"
+                namespaced: true
+                kind: "ReplicaSet"
+              # HyperShift resources
+              hostedclusters:
+                api_prefix: "/apis/hypershift.openshift.io/v1beta1"
+                namespaced: true
+                kind: "HostedCluster"
+              nodepools:
+                api_prefix: "/apis/hypershift.openshift.io/v1beta1"
+                namespaced: true
+                kind: "NodePool"
+              hostedcontrolplanes:
+                api_prefix: "/apis/hypershift.openshift.io/v1beta1"
+                namespaced: true
+                kind: "HostedControlPlane"
+              # Cluster API resources
+              machinedeployments:
+                api_prefix: "/apis/cluster.x-k8s.io/v1beta1"
+                namespaced: true
+                kind: "MachineDeployment"
+              machines:
+                api_prefix: "/apis/cluster.x-k8s.io/v1beta1"
+                namespaced: true
+                kind: "Machine"
+              machinesets:
+                api_prefix: "/apis/cluster.x-k8s.io/v1beta1"
+                namespaced: true
+                kind: "MachineSet"
+              # Cluster API infrastructure provider resources (GCP)
+              gcpmachines:
+                api_prefix: "/apis/infrastructure.cluster.x-k8s.io/v1beta1"
+                namespaced: true
+                kind: "GCPMachine"
+              gcpmachinetemplates:
+                api_prefix: "/apis/infrastructure.cluster.x-k8s.io/v1beta1"
+                namespaced: true
+                kind: "GCPMachineTemplate"
+
+    - validate_resource_type:
+        switch:
+          - condition: ${not(resource_type in api_routes)}
+            raise: '${"Unsupported resource type: " + resource_type + ". Supported: pods, deployments, services, configmaps, nodes, namespaces, hostedclusters, nodepools, hostedcontrolplanes"}'
+
+    - get_route_config:
+        assign:
+          - route: ${api_routes[resource_type]}
+          - is_namespaced: ${route.namespaced}
+          - api_prefix: ${route.api_prefix}
+          - resource_kind: ${route.kind}
+
+    - validate_namespace:
+        switch:
+          - condition: ${is_namespaced and namespace == ""}
+            raise: '${"Resource type " + resource_type + " requires a namespace"}'
+
+    - build_resource_path:
+        switch:
+          # Cluster-scoped resource - no namespace in path
+          - condition: ${not(is_namespaced)}
+            assign:
+              - resource_path: '${api_prefix + "/" + resource_type + "/" + name}'
+          # Namespaced resource
+          - condition: true
+            assign:
+              - resource_path: '${api_prefix + "/namespaces/" + namespace + "/" + resource_type + "/" + name}'
+
+    - get_resource:
+        call: gke.request
+        args:
+          project: ${project}
+          cluster_id: ${cluster_id}
+          location: ${location}
+          method: "GET"
+          path: ${resource_path}
+        result: resource_response
+
+    # Build events query based on resource type
+    - build_events_path:
+        switch:
+          # For namespaced resources, query events in the same namespace
+          - condition: ${is_namespaced}
+            assign:
+              - events_path: '${"/api/v1/namespaces/" + namespace + "/events?fieldSelector=involvedObject.name=" + name + ",involvedObject.kind=" + resource_kind}'
+          # For cluster-scoped resources (nodes, namespaces), query cluster-wide events
+          - condition: true
+            assign:
+              - events_path: '${"/api/v1/events?fieldSelector=involvedObject.name=" + name + ",involvedObject.kind=" + resource_kind}'
+
+    - get_events:
+        try:
+          call: gke.request
+          args:
+            project: ${project}
+            cluster_id: ${cluster_id}
+            location: ${location}
+            method: "GET"
+            path: ${events_path}
+          result: events_response
+        except:
+          as: e
+          steps:
+            - handle_events_error:
+                assign:
+                  - events_response:
+                      body:
+                        items: []
+
+    # Extract conditions if present (for pods, deployments, nodes, etc.)
+    - extract_conditions:
+        try:
+          steps:
+            - get_conditions:
+                assign:
+                  - conditions: ${default(map.get(resource_response.body.status, "conditions"), [])}
+        except:
+          as: e
+          steps:
+            - no_conditions:
+                assign:
+                  - conditions: []
+
+    # Format events for output
+    - format_events:
+        assign:
+          - formatted_events: []
+
+    - iterate_events:
+        for:
+          value: event
+          in: ${events_response.body.items}
+          steps:
+            - format_event:
+                assign:
+                  - event_info:
+                      type: ${event.type}
+                      reason: ${event.reason}
+                      message: ${default(map.get(event, "message"), "")}
+                      count: ${default(map.get(event, "count"), 1)}
+                      first_timestamp: ${default(map.get(event, "firstTimestamp"), "")}
+                      last_timestamp: ${default(map.get(event, "lastTimestamp"), "")}
+                  - formatted_events: ${list.concat(formatted_events, event_info)}
+
+    - return_result:
+        return:
+          status: "success"
+          resource_type: ${resource_type}
+          namespace: ${if(is_namespaced, namespace, null)}
+          name: ${name}
+          resource: ${resource_response.body}
+          conditions: ${conditions}
+          events:
+            count: ${len(formatted_events)}
+            items: ${formatted_events}
