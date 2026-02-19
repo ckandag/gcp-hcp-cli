@@ -493,6 +493,202 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd", days)
 }
 
+// PrintAnalysis renders AI analysis output for a pod in a human-readable format.
+func PrintAnalysis(w io.Writer, data map[string]interface{}, namespace string) error {
+	name := GetString(data, "name")
+	analysis := AsMap(data["analysis"])
+
+	phase := GetString(analysis, "pod_phase")
+	if phase == "" {
+		phase = "Unknown"
+	}
+	eventsCount := getInt(analysis, "events_count")
+	logLines := getInt(analysis, "log_lines_analyzed")
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "POD ANALYSIS")
+	fmt.Fprintln(w, "============")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  Pod:       %s\n", name)
+	fmt.Fprintf(w, "  Namespace: %s\n", namespace)
+	fmt.Fprintf(w, "  Phase:     %s\n", phase)
+	fmt.Fprintf(w, "  Events:    %d\n", eventsCount)
+	fmt.Fprintf(w, "  Logs:      %d lines analyzed\n", logLines)
+	fmt.Fprintln(w)
+
+	aiAnalysis := GetString(analysis, "ai_analysis")
+	aiError := GetString(analysis, "error")
+
+	if aiError != "" {
+		fmt.Fprintln(w, "AI ANALYSIS")
+		fmt.Fprintln(w, "===========")
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "  %s\n", aiError)
+		fmt.Fprintln(w)
+		return nil
+	}
+
+	if aiAnalysis == "" || aiAnalysis == "<nil>" {
+		fmt.Fprintln(w, "AI ANALYSIS")
+		fmt.Fprintln(w, "===========")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "  No analysis available.")
+		fmt.Fprintln(w)
+		return nil
+	}
+
+	fmt.Fprintln(w, "AI ANALYSIS")
+	fmt.Fprintln(w, "===========")
+	fmt.Fprintln(w)
+
+	if rendered := renderStructuredAnalysis(w, aiAnalysis); rendered {
+		return nil
+	}
+
+	fmt.Fprintln(w, aiAnalysis)
+	fmt.Fprintln(w)
+	return nil
+}
+
+// renderStructuredAnalysis attempts to parse the AI response as structured JSON
+// and render it in a human-readable format. Returns true if it succeeded.
+func renderStructuredAnalysis(w io.Writer, raw string) bool {
+	cleaned := stripCodeFence(raw)
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
+		return false
+	}
+
+	if _, ok := parsed["Summary"]; !ok {
+		return false
+	}
+
+	severity := stringVal(parsed, "Severity")
+	if severity != "" {
+		fmt.Fprintf(w, "  Severity:  %s\n\n", severity)
+	}
+
+	if summary := stringVal(parsed, "Summary"); summary != "" {
+		printSection(w, "Summary", summary)
+	}
+
+	if errors := listVal(parsed, "Errors Detected"); len(errors) > 0 {
+		printListSection(w, "Errors Detected", errors)
+	} else if errStr := stringVal(parsed, "Errors Detected"); errStr != "" {
+		printSection(w, "Errors Detected", errStr)
+	}
+
+	if rca := stringVal(parsed, "Root Cause Analysis"); rca != "" {
+		printSection(w, "Root Cause Analysis", rca)
+	}
+
+	if actions := listVal(parsed, "Recommended Actions"); len(actions) > 0 {
+		printNumberedSection(w, "Recommended Actions", actions)
+	} else if actStr := stringVal(parsed, "Recommended Actions"); actStr != "" {
+		printSection(w, "Recommended Actions", actStr)
+	}
+
+	fmt.Fprintln(w)
+	return true
+}
+
+func stripCodeFence(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+	}
+	if strings.HasSuffix(s, "```") {
+		s = s[:len(s)-3]
+	}
+	return strings.TrimSpace(s)
+}
+
+func stringVal(m map[string]interface{}, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func listVal(m map[string]interface{}, key string) []string {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func printSection(w io.Writer, title, body string) {
+	fmt.Fprintf(w, "  %s\n", title)
+	for _, line := range wrapText(body, 76) {
+		fmt.Fprintf(w, "    %s\n", line)
+	}
+	fmt.Fprintln(w)
+}
+
+func printListSection(w io.Writer, title string, items []string) {
+	fmt.Fprintf(w, "  %s\n", title)
+	for _, item := range items {
+		lines := wrapText(item, 72)
+		fmt.Fprintf(w, "    • %s\n", lines[0])
+		for _, cont := range lines[1:] {
+			fmt.Fprintf(w, "      %s\n", cont)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+func printNumberedSection(w io.Writer, title string, items []string) {
+	fmt.Fprintf(w, "  %s\n", title)
+	for i, item := range items {
+		lines := wrapText(item, 72)
+		fmt.Fprintf(w, "    %d. %s\n", i+1, lines[0])
+		for _, cont := range lines[1:] {
+			fmt.Fprintf(w, "       %s\n", cont)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+func wrapText(s string, width int) []string {
+	if len(s) <= width {
+		return []string{s}
+	}
+	var lines []string
+	for len(s) > width {
+		cut := width
+		for cut > 0 && s[cut] != ' ' {
+			cut--
+		}
+		if cut == 0 {
+			cut = width
+		}
+		lines = append(lines, s[:cut])
+		s = strings.TrimSpace(s[cut:])
+	}
+	if s != "" {
+		lines = append(lines, s)
+	}
+	return lines
+}
+
 // SortItems sorts a list of Kubernetes items by namespace then name.
 func SortItems(items []interface{}) {
 	sort.Slice(items, func(i, j int) bool {
