@@ -54,6 +54,7 @@ func newGetCmd() *cobra.Command {
 	var (
 		namespace     string
 		labelSelector string
+		analyze       bool
 		timeout       time.Duration
 	)
 
@@ -69,6 +70,9 @@ Examples:
 
   # Get a specific pod
   gcphcp ops get pods my-pod -n hypershift
+
+  # AI-powered pod analysis
+  gcphcp ops get pods my-pod -n hypershift --analyze
 
   # List all hosted clusters
   gcphcp ops get hostedclusters -n clusters
@@ -96,6 +100,10 @@ Examples:
 				resourceName = args[1]
 			}
 
+			if analyze && (resourceType != "pods" || resourceName == "") {
+				return fmt.Errorf("--analyze requires a specific pod name (e.g. gcphcp ops get pods my-pod -n ns --analyze)")
+			}
+
 			project, _ := cmd.Flags().GetString("project")
 			region, _ := cmd.Flags().GetString("region")
 			outputFormat, _ := cmd.Flags().GetString("output")
@@ -119,6 +127,9 @@ Examples:
 			if labelSelector != "" {
 				data["label_selector"] = labelSelector
 			}
+			if analyze {
+				data["analyze"] = true
+			}
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
@@ -129,17 +140,21 @@ Examples:
 			}
 			defer client.Close()
 
-			fmt.Fprintf(os.Stderr, "Getting %s", resourceType)
-			if resourceName != "" {
-				fmt.Fprintf(os.Stderr, " %s", resourceName)
+			if analyze {
+				fmt.Fprintf(os.Stderr, "Analyzing %s/%s in %s (this may take a moment)...\n", resourceType, resourceName, namespace)
+			} else {
+				fmt.Fprintf(os.Stderr, "Getting %s", resourceType)
+				if resourceName != "" {
+					fmt.Fprintf(os.Stderr, " %s", resourceName)
+				}
+				if namespace != "" {
+					fmt.Fprintf(os.Stderr, " (ns: %s)", namespace)
+				}
+				if labelSelector != "" {
+					fmt.Fprintf(os.Stderr, " (selector: %s)", labelSelector)
+				}
+				fmt.Fprintln(os.Stderr)
 			}
-			if namespace != "" {
-				fmt.Fprintf(os.Stderr, " (ns: %s)", namespace)
-			}
-			if labelSelector != "" {
-				fmt.Fprintf(os.Stderr, " (selector: %s)", labelSelector)
-			}
-			fmt.Fprintln(os.Stderr)
 
 			_, result, err := client.Run(ctx, "get", data)
 			if err != nil {
@@ -155,12 +170,17 @@ Examples:
 				return output.PrintJSON(os.Stdout, result.Result)
 			}
 
+			if analyze {
+				return output.PrintAnalysis(os.Stdout, result.Result, namespace)
+			}
+
 			return output.PrintResourceTable(os.Stdout, result.Result, resourceType)
 		},
 	}
 
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Kubernetes namespace")
 	cmd.Flags().StringVarP(&labelSelector, "selector", "l", "", "Label selector (e.g. app=nginx)")
+	cmd.Flags().BoolVar(&analyze, "analyze", false, "Run AI analysis on a pod (requires a specific pod name)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "Maximum time to wait for workflow completion")
 
 	return cmd

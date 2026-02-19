@@ -34,6 +34,12 @@ gcphcp ops get nodes
 gcphcp ops get deployments -n kube-system
 gcphcp ops get hc -n clusters               # aliases: hc, hcp, np, deploy, svc, etc.
 
+# Get raw JSON response (full Kubernetes API output)
+gcphcp ops get pods -n hypershift -o json
+
+# AI-powered pod analysis (uses Vertex AI to diagnose issues from logs/events)
+gcphcp ops get pods my-pod -n hypershift --analyze
+
 # Pod logs
 gcphcp ops logs my-pod -n hypershift
 gcphcp ops logs my-pod -n hypershift -c etcd --tail 50
