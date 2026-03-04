@@ -689,6 +689,51 @@ func wrapText(s string, width int) []string {
 	return lines
 }
 
+// PrintDiagnosis renders a structured diagnosis from the diagnose-agent in human-readable format.
+func PrintDiagnosis(w io.Writer, rootCause, confidence, severity string, evidence []string, recommendation string, metadata map[string]interface{}) error {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "DIAGNOSIS")
+	fmt.Fprintln(w, "=========")
+	fmt.Fprintln(w)
+
+	if severity != "" {
+		fmt.Fprintf(w, "  Severity:   %s\n", strings.ToUpper(severity))
+	}
+	if confidence != "" {
+		fmt.Fprintf(w, "  Confidence: %s\n", confidence)
+	}
+	fmt.Fprintln(w)
+
+	if rootCause != "" {
+		printSection(w, "Root Cause", rootCause)
+	}
+
+	if len(evidence) > 0 {
+		printListSection(w, "Evidence", evidence)
+	}
+
+	if recommendation != "" {
+		printSection(w, "Recommendation", recommendation)
+	}
+
+	if metadata != nil {
+		steps, _ := metadata["steps"].([]interface{})
+		if len(steps) > 0 {
+			strs := make([]string, 0, len(steps))
+			for _, s := range steps {
+				if str, ok := s.(string); ok {
+					strs = append(strs, str)
+				}
+			}
+			if len(strs) > 0 {
+				printNumberedSection(w, "Investigation Steps", strs)
+			}
+		}
+	}
+
+	return nil
+}
+
 // SortItems sorts a list of Kubernetes items by namespace then name.
 func SortItems(items []interface{}) {
 	sort.Slice(items, func(i, j int) bool {
