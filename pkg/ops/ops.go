@@ -28,6 +28,7 @@ Use 'ops wf' for direct workflow management.`,
 	cmd.AddCommand(newGetCmd())
 	cmd.AddCommand(newLogsCmd())
 	cmd.AddCommand(newDescribeCmd())
+	cmd.AddCommand(newDiagnoseCmd())
 	cmd.AddCommand(wf.NewWfCmd())
 
 	return cmd

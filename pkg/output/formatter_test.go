@@ -273,6 +273,54 @@ func TestPrintAnalysis_WithStructuredJSON(t *testing.T) {
 	}
 }
 
+func TestPrintDiagnosis(t *testing.T) {
+	var buf bytes.Buffer
+	err := PrintDiagnosis(&buf,
+		"Pod is OOMKilled due to memory limit",
+		"high",
+		"critical",
+		[]string{"Container exceeded 512Mi limit", "OOMKilled event recorded"},
+		"Increase memory limit to 1Gi",
+		map[string]interface{}{
+			"steps": []interface{}{"Checked pod status", "Analyzed events", "Reviewed resource limits"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"DIAGNOSIS",
+		"CRITICAL",
+		"high",
+		"OOMKilled due to memory limit",
+		"Container exceeded 512Mi limit",
+		"OOMKilled event recorded",
+		"Increase memory limit to 1Gi",
+		"Investigation Steps",
+		"Checked pod status",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintDiagnosis_MinimalFields(t *testing.T) {
+	var buf bytes.Buffer
+	err := PrintDiagnosis(&buf, "Unknown issue", "", "", nil, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DIAGNOSIS") {
+		t.Error("expected DIAGNOSIS header")
+	}
+	if !strings.Contains(out, "Unknown issue") {
+		t.Error("expected root cause in output")
+	}
+}
+
 func TestPrintAnalysis_FallbackForNonJSON(t *testing.T) {
 	var buf bytes.Buffer
 	data := map[string]interface{}{
