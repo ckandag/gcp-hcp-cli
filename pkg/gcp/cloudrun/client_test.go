@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -278,6 +279,107 @@ func TestWrapAuthError(t *testing.T) {
 			}
 			if !contains(wrapped.Error(), tt.wantMsg) {
 				t.Errorf("expected error to contain %q, got %q", tt.wantMsg, wrapped.Error())
+			}
+		})
+	}
+}
+
+func TestDiagnose_RetryOn503ThenSuccess(t *testing.T) {
+	var attempts atomic.Int32
+	expectedResp := DiagnoseResponse{
+		Status: "success",
+		Diagnosis: Diagnosis{
+			RootCause:      "cold start resolved",
+			Confidence:     "high",
+			Evidence:       []string{"service warmed up"},
+			Recommendation: "none",
+			Severity:       "low",
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n <= 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("service unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(expectedResp)
+	}))
+	defer server.Close()
+
+	client := &Client{
+		Project:    "test-project",
+		Region:     "us-central1",
+		httpClient: server.Client(),
+	}
+
+	resp, err := client.Diagnose(t.Context(), server.URL, "test cold start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != "success" {
+		t.Errorf("expected status 'success', got %q", resp.Status)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Errorf("expected 2 attempts, got %d", got)
+	}
+}
+
+func TestDiagnose_GivesUpAfterMaxRetries(t *testing.T) {
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("always unavailable"))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		Project:    "test-project",
+		Region:     "us-central1",
+		httpClient: server.Client(),
+	}
+
+	_, err := client.Diagnose(t.Context(), server.URL, "test max retries")
+	if err == nil {
+		t.Fatal("expected error after max retries")
+	}
+	if !contains(err.Error(), "503") {
+		t.Errorf("expected error to mention 503, got %q", err.Error())
+	}
+	// 1 initial + 3 retries = 4 total
+	if got := attempts.Load(); got != 4 {
+		t.Errorf("expected 4 attempts, got %d", got)
+	}
+}
+
+func TestDiagnose_NoRetryOnNonTransient(t *testing.T) {
+	for _, code := range []int{400, 401, 404} {
+		t.Run(fmt.Sprintf("status_%d", code), func(t *testing.T) {
+			var attempts atomic.Int32
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(code)
+				w.Write([]byte("non-transient error"))
+			}))
+			defer server.Close()
+
+			client := &Client{
+				Project:    "test-project",
+				Region:     "us-central1",
+				httpClient: server.Client(),
+			}
+
+			_, err := client.Diagnose(t.Context(), server.URL, "test no retry")
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Errorf("expected 1 attempt (no retry), got %d", got)
 			}
 		})
 	}
