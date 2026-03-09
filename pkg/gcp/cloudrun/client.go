@@ -10,12 +10,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"google.golang.org/api/idtoken"
 	"google.golang.org/api/option"
 	runapi "google.golang.org/api/run/v2"
+)
+
+const (
+	maxRetries       = 3
+	initialBackoff   = 1 * time.Second
+	maxBackoff       = 4 * time.Second
 )
 
 // Client calls Cloud Run services using identity token authentication.
@@ -101,15 +109,12 @@ func (c *Client) Diagnose(ctx context.Context, serviceURL, query string) (*Diagn
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	resp, err := c.doWithRetry(ctx, httpClient, http.MethodPost, endpoint,
+		func() io.Reader { return bytes.NewReader(body) },
+		map[string]string{"Content-Type": "application/json"},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, wrapAuthError("calling diagnose-agent", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -145,15 +150,12 @@ func (c *Client) DiagnoseStream(ctx context.Context, serviceURL, query string, o
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	resp, err := c.doWithRetry(ctx, httpClient, http.MethodPost, endpoint,
+		func() io.Reader { return bytes.NewReader(body) },
+		map[string]string{"Content-Type": "application/json"},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, wrapAuthError("calling diagnose-agent", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -198,6 +200,63 @@ func (c *Client) DiagnoseStream(ctx context.Context, serviceURL, query string, o
 	}
 
 	return nil, fmt.Errorf("stream ended without a final result")
+}
+
+// isTransientStatus returns true for HTTP status codes that indicate a
+// transient error (typically Cloud Run cold start or infrastructure issues).
+func isTransientStatus(code int) bool {
+	return code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
+}
+
+// doWithRetry executes an HTTP request, retrying on transient status codes
+// (502, 503, 504) with exponential backoff. The bodyFunc is called on each
+// attempt to provide a fresh request body.
+func (c *Client) doWithRetry(ctx context.Context, httpClient *http.Client, method, url string, bodyFunc func() io.Reader, headers map[string]string) (*http.Response, error) {
+	backoff := initialBackoff
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, url, bodyFunc())
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, wrapAuthError("calling diagnose-agent", err)
+		}
+
+		if !isTransientStatus(resp.StatusCode) || attempt == maxRetries {
+			return resp, nil
+		}
+
+		// Drain body before retry to allow connection reuse.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		fmt.Fprintf(os.Stderr,
+			"diagnose-agent returned %d, retrying in %s (attempt %d/%d)\n",
+			resp.StatusCode, backoff, attempt+1, maxRetries,
+		)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+
+	// unreachable, but keeps the compiler happy
+	return nil, fmt.Errorf("retry loop exited unexpectedly")
 }
 
 func (c *Client) getHTTPClient(ctx context.Context, audience string) (*http.Client, error) {
