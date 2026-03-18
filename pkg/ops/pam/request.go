@@ -182,11 +182,14 @@ func printGrantResult(w io.Writer, outputFormat string, grant *pamclient.GrantIn
 	fmt.Fprintf(w, "  Grant:       %s\n", grant.ShortName())
 	fmt.Fprintf(w, "  State:       %s\n", grant.State)
 	fmt.Fprintf(w, "  Requester:   %s\n", grant.Requester)
-	fmt.Fprintf(w, "  Duration:    %s\n", grant.Duration)
+	fmt.Fprintf(w, "  Duration:    %s\n", grant.RequestedDuration)
 	fmt.Fprintf(w, "  Entitlement: %s\n", grant.ShortEntitlement())
 	fmt.Fprintf(w, "  Created:     %s\n", grant.CreateTime.Format(time.RFC3339))
 	if !grant.ActivateTime.IsZero() {
 		fmt.Fprintf(w, "  Activated:   %s\n", grant.ActivateTime.Format(time.RFC3339))
+	}
+	if remaining := grant.RemainingTime(); remaining > 0 {
+		fmt.Fprintf(w, "  Remaining:   %s\n", remaining)
 	}
 	fmt.Fprintln(w)
 

@@ -165,7 +165,7 @@ func TestGrantInfoFields(t *testing.T) {
 		State:        "ACTIVE",
 		Requester:    "user@example.com",
 		Entitlement:  "projects/p/locations/global/entitlements/e",
-		Duration:     "1h0m0s",
+		RequestedDuration: time.Hour,
 		CreateTime:   now,
 		ActivateTime: now.Add(time.Minute),
 	}

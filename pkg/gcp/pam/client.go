@@ -57,13 +57,14 @@ type EntitlementInfo struct {
 
 // GrantInfo holds metadata about a PAM grant.
 type GrantInfo struct {
-	Name         string    `json:"name"`
-	State        string    `json:"state"`
-	Requester    string    `json:"requester"`
-	Entitlement  string    `json:"entitlement"`
-	Duration     string    `json:"duration"`
-	CreateTime   time.Time `json:"create_time"`
-	ActivateTime time.Time `json:"activate_time,omitempty"`
+	Name               string        `json:"name"`
+	State              string        `json:"state"`
+	Requester          string        `json:"requester"`
+	Entitlement        string        `json:"entitlement"`
+	RequestedDuration  time.Duration `json:"requested_duration"`
+	CreateTime         time.Time     `json:"create_time"`
+	ActivateTime       time.Time     `json:"activate_time,omitempty"`
+	ApprovalExpireTime time.Time     `json:"approval_expire_time,omitempty"`
 }
 
 // ShortName returns the last segment of the grant's full resource name.
@@ -319,12 +320,9 @@ func (c *Client) WaitForGrant(ctx context.Context, grantName string) (*GrantInfo
 
 func grantInfoFromProto(g *pb.Grant) *GrantInfo {
 	info := &GrantInfo{
-		Name:  g.Name,
-		State: g.State.String(),
-	}
-
-	if g.Requester != "" {
-		info.Requester = g.Requester
+		Name:      g.Name,
+		State:     g.State.String(),
+		Requester: g.Requester,
 	}
 
 	// Extract entitlement from grant name: .../entitlements/<id>/grants/<gid>
@@ -334,7 +332,7 @@ func grantInfoFromProto(g *pb.Grant) *GrantInfo {
 	}
 
 	if g.RequestedDuration != nil {
-		info.Duration = g.RequestedDuration.AsDuration().String()
+		info.RequestedDuration = g.RequestedDuration.AsDuration()
 	}
 
 	if g.CreateTime != nil {
@@ -342,11 +340,39 @@ func grantInfoFromProto(g *pb.Grant) *GrantInfo {
 	}
 	if g.Timeline != nil {
 		for _, event := range g.Timeline.Events {
-			if _, ok := event.GetEvent().(*pb.Grant_Timeline_Event_Activated_); ok {
+			switch ev := event.GetEvent().(type) {
+			case *pb.Grant_Timeline_Event_Activated_:
+				_ = ev
 				info.ActivateTime = event.EventTime.AsTime()
+			case *pb.Grant_Timeline_Event_Requested_:
+				if ev.Requested != nil && ev.Requested.ExpireTime != nil {
+					info.ApprovalExpireTime = ev.Requested.ExpireTime.AsTime()
+				}
 			}
 		}
 	}
 
 	return info
+}
+
+// RemainingTime returns the time remaining for the grant based on its state.
+// For APPROVAL_AWAITED: time until approval expires.
+// For ACTIVE: time until access ends.
+// Returns zero if not applicable.
+func (g *GrantInfo) RemainingTime() time.Duration {
+	now := time.Now()
+	switch g.State {
+	case "APPROVAL_AWAITED":
+		if !g.ApprovalExpireTime.IsZero() && g.ApprovalExpireTime.After(now) {
+			return g.ApprovalExpireTime.Sub(now).Truncate(time.Second)
+		}
+	case "ACTIVE", "ACTIVATED":
+		if !g.ActivateTime.IsZero() && g.RequestedDuration > 0 {
+			endTime := g.ActivateTime.Add(g.RequestedDuration)
+			if endTime.After(now) {
+				return endTime.Sub(now).Truncate(time.Second)
+			}
+		}
+	}
+	return 0
 }

@@ -91,7 +91,7 @@ func TestPrintGrantResult_Text(t *testing.T) {
 		State:       "ACTIVE",
 		Requester:   "user@example.com",
 		Entitlement: "projects/p/locations/global/entitlements/e",
-		Duration:    "1h0m0s",
+		RequestedDuration: time.Hour,
 		CreateTime:  time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC),
 	}
 
@@ -133,9 +133,9 @@ func TestPrintGrantResult_WithActivateTime(t *testing.T) {
 		State:        "ACTIVE",
 		Requester:    "user@example.com",
 		Entitlement:  "projects/p/locations/global/entitlements/e",
-		Duration:     "1h0m0s",
-		CreateTime:   time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC),
-		ActivateTime: time.Date(2026, 3, 18, 10, 5, 0, 0, time.UTC),
+		RequestedDuration: time.Hour,
+		CreateTime:        time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC),
+		ActivateTime:      time.Date(2026, 3, 18, 10, 5, 0, 0, time.UTC),
 	}
 
 	err := printGrantResult(&buf, "text", grant)

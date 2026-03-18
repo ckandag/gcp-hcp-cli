@@ -140,16 +140,21 @@ Examples:
 				return nil
 			}
 
-			t := output.NewTable(os.Stdout, "ID", "ENTITLEMENT", "STATE", "REQUESTER", "CREATED", "DURATION")
+			t := output.NewTable(os.Stdout, "ID", "ENTITLEMENT", "STATE", "REQUESTER", "CREATED", "DURATION", "REMAINING")
 			for _, g := range grants {
 				created := output.Age(g.CreateTime.Format(time.RFC3339))
+				remaining := ""
+				if r := g.RemainingTime(); r > 0 {
+					remaining = r.String()
+				}
 				t.AddRow(
 					g.ShortName(),
 					g.ShortEntitlement(),
 					g.State,
 					g.Requester,
 					created,
-					g.Duration,
+					g.RequestedDuration.String(),
+					remaining,
 				)
 			}
 			return t.Flush()
