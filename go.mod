@@ -5,8 +5,10 @@ go 1.24.5
 require (
 	cloud.google.com/go/privilegedaccessmanager v0.3.1
 	cloud.google.com/go/workflows v1.14.3
+	github.com/ergochat/readline v0.1.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/oauth2 v0.35.0
+	golang.org/x/sync v0.19.0
 	google.golang.org/api v0.266.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
@@ -36,7 +38,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
