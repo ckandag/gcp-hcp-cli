@@ -236,16 +236,16 @@ func runEtcdCommand(cmd *cobra.Command, etcdCommand, namespace string, timeout t
 func cleanEtcdError(errMsg string) string {
 	unescaped := strings.NewReplacer(`\"`, `"`, `\n`, "\n").Replace(errMsg)
 
+	// Remove trailing workflow step info (e.g. 'in step "raise_error_result"...')
+	if idx := strings.Index(unescaped, "\nin step "); idx != -1 {
+		unescaped = unescaped[:idx]
+	}
+
 	// Strip RuntimeError wrapper
 	if idx := strings.Index(unescaped, "RuntimeError: "); idx != -1 {
 		unescaped = unescaped[idx+len("RuntimeError: "):]
 	}
 	unescaped = strings.Trim(unescaped, "\" \n")
-
-	// Remove trailing workflow step info (e.g. 'in step "raise_error_result"...')
-	if idx := strings.Index(unescaped, "\nin step "); idx != -1 {
-		unescaped = unescaped[:idx]
-	}
 
 	// Filter out JSON log lines, keep human-readable lines
 	var lines []string
