@@ -56,7 +56,7 @@ Examples:
 				if format == output.FormatJSON {
 					return output.PrintJSON(os.Stdout, result)
 				}
-				return output.PrintEtcdHealth(os.Stdout, parseEtcdOutput(result))
+				return output.PrintTable(os.Stdout, parseEtcdOutput(result), etcdHealthColumns)
 			})
 		},
 	}
@@ -88,7 +88,7 @@ Examples:
 				if format == output.FormatJSON {
 					return output.PrintJSON(os.Stdout, result)
 				}
-				return output.PrintEtcdStatus(os.Stdout, parseEtcdOutput(result))
+				return output.PrintTable(os.Stdout, parseEtcdOutput(result), etcdStatusColumns)
 			})
 		},
 	}
@@ -120,7 +120,14 @@ Examples:
 				if format == output.FormatJSON {
 					return output.PrintJSON(os.Stdout, result)
 				}
-				return output.PrintEtcdMemberList(os.Stdout, parseEtcdOutput(result))
+				parsed := parseEtcdOutput(result)
+				// member-list returns {header, members}, extract the members array
+				if m, ok := parsed.(map[string]interface{}); ok {
+					if members, ok := m["members"].([]interface{}); ok {
+						return output.PrintTable(os.Stdout, members, etcdMemberColumns)
+					}
+				}
+				return output.PrintJSON(os.Stdout, parsed)
 			})
 		},
 	}
@@ -291,6 +298,49 @@ func parseJSONFromError(errMsg string) interface{} {
 	}
 
 	return nil
+}
+
+// --- Column definitions for etcd subcommands ---
+
+var etcdHealthColumns = []output.Column{
+	{Header: "ENDPOINT", Path: "endpoint", Transform: output.TransformShortenEndpoint},
+	{Header: "HEALTH", Path: "health", Transform: output.TransformBool},
+	{Header: "TOOK", Path: "took"},
+	{Header: "ERROR", Path: "error", OmitEmpty: true},
+}
+
+var etcdStatusColumns = []output.Column{
+	{Header: "ENDPOINT", Path: "Endpoint", Transform: output.TransformShortenEndpoint},
+	{Header: "ROLE", Compute: func(item map[string]interface{}, allItems []interface{}) string {
+		// Determine leader from the first item's Status.leader field
+		var leaderID float64
+		for _, it := range allItems {
+			status := output.AsMap(output.AsMap(it)["Status"])
+			if l, ok := status["leader"].(float64); ok {
+				leaderID = l
+				break
+			}
+		}
+		header := output.AsMap(output.AsMap(item["Status"])["header"])
+		if memberID, ok := header["member_id"].(float64); ok && memberID == leaderID {
+			return "leader"
+		}
+		return "follower"
+	}},
+	{Header: "VERSION", Path: "Status.version"},
+	{Header: "DB SIZE", Path: "Status.dbSize", Transform: output.TransformBytes},
+	{Header: "DB IN USE", Path: "Status.dbSizeInUse", Transform: output.TransformBytes},
+	{Header: "REVISION", Path: "Status.header.revision", Transform: output.TransformUint64},
+	{Header: "RAFT INDEX", Path: "Status.raftIndex", Transform: output.TransformUint64},
+	{Header: "RAFT TERM", Path: "Status.raftTerm", Transform: output.TransformUint64},
+}
+
+var etcdMemberColumns = []output.Column{
+	{Header: "NAME", Path: "name"},
+	{Header: "ID", Path: "ID", Transform: output.TransformUint64},
+	{Header: "IS LEARNER", Path: "isLearner", Transform: output.TransformBool},
+	{Header: "PEER URLS", Path: "peerURLs", Transform: output.TransformShortenURLList},
+	{Header: "CLIENT URLS", Path: "clientURLs", Transform: output.TransformShortenURLList},
 }
 
 // parseEtcdOutput extracts and parses the "output" field from a workflow result.
