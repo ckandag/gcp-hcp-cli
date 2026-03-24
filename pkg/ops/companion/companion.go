@@ -79,7 +79,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&serviceName, "service-name", "sre-companion-agent", "Cloud Run service name")
+	cmd.Flags().StringVar(&serviceName, "service-name", "diagnose-agent", "Cloud Run service name")
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "Maximum session duration")
 	cmd.Flags().StringVar(&pdIncident, "pagerduty-incident", "", "Pre-load a PagerDuty incident for context")
 
