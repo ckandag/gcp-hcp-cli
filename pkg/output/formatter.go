@@ -106,6 +106,10 @@ func PrintResourceTable(w io.Writer, data map[string]interface{}, resourceType s
 		return printEventsTable(w, items)
 	case "configmaps", "cm":
 		return printConfigMapsTable(w, items)
+	case "persistentvolumeclaims", "pvc":
+		return printPVCTable(w, items)
+	case "persistentvolumes", "pv":
+		return printPVTable(w, items)
 	default:
 		return printGenericTable(w, items, resourceType)
 	}
@@ -223,6 +227,81 @@ func printConfigMapsTable(w io.Writer, items []interface{}) error {
 		)
 	}
 	return t.Flush()
+}
+
+func printPVCTable(w io.Writer, items []interface{}) error {
+	t := NewTable(w, "NAMESPACE", "NAME", "STATUS", "VOLUME", "CAPACITY", "ACCESS MODES", "STORAGECLASS", "AGE")
+	for _, item := range items {
+		m := AsMap(item)
+		meta := AsMap(m["metadata"])
+		spec := AsMap(m["spec"])
+		status := AsMap(m["status"])
+		capacity := AsMap(status["capacity"])
+
+		t.AddRow(
+			GetString(meta, "namespace"),
+			GetString(meta, "name"),
+			GetString(status, "phase"),
+			GetString(spec, "volumeName"),
+			GetString(capacity, "storage"),
+			formatAccessModes(spec["accessModes"]),
+			GetString(spec, "storageClassName"),
+			age(GetString(meta, "creationTimestamp")),
+		)
+	}
+	return t.Flush()
+}
+
+func printPVTable(w io.Writer, items []interface{}) error {
+	t := NewTable(w, "NAME", "CAPACITY", "ACCESS MODES", "RECLAIM POLICY", "STATUS", "CLAIM", "STORAGECLASS", "AGE")
+	for _, item := range items {
+		m := AsMap(item)
+		meta := AsMap(m["metadata"])
+		spec := AsMap(m["spec"])
+		status := AsMap(m["status"])
+		capacity := AsMap(spec["capacity"])
+		claimRef := AsMap(spec["claimRef"])
+
+		claim := ""
+		if ns := GetString(claimRef, "namespace"); ns != "" {
+			claim = ns + "/" + GetString(claimRef, "name")
+		}
+
+		t.AddRow(
+			GetString(meta, "name"),
+			GetString(capacity, "storage"),
+			formatAccessModes(spec["accessModes"]),
+			GetString(spec, "persistentVolumeReclaimPolicy"),
+			GetString(status, "phase"),
+			claim,
+			GetString(spec, "storageClassName"),
+			age(GetString(meta, "creationTimestamp")),
+		)
+	}
+	return t.Flush()
+}
+
+func formatAccessModes(v interface{}) string {
+	modes, ok := v.([]interface{})
+	if !ok || len(modes) == 0 {
+		return ""
+	}
+	abbrevs := map[string]string{
+		"ReadWriteOnce":    "RWO",
+		"ReadOnlyMany":     "ROX",
+		"ReadWriteMany":    "RWX",
+		"ReadWriteOncePod": "RWOP",
+	}
+	parts := make([]string, 0, len(modes))
+	for _, m := range modes {
+		s := fmt.Sprintf("%v", m)
+		if abbr, ok := abbrevs[s]; ok {
+			parts = append(parts, abbr)
+		} else {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 func printNamespacesTable(w io.Writer, items []interface{}) error {
