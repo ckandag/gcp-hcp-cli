@@ -338,3 +338,187 @@ func TestPrintAnalysis_FallbackForNonJSON(t *testing.T) {
 		t.Error("expected raw analysis text in fallback output")
 	}
 }
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input interface{}
+		want  string
+	}{
+		{"GiB", float64(1273696256), "1.2 GiB"},
+		{"MiB", float64(52428800), "50.0 MiB"},
+		{"KiB", float64(2048), "2.0 KiB"},
+		{"bytes", float64(512), "512 B"},
+		{"int", 1073741824, "1.0 GiB"},
+		{"string fallback", "unknown", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FormatBytes(tt.input); got != tt.want {
+				t.Errorf("FormatBytes(%v) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrintTable_Basic(t *testing.T) {
+	var buf bytes.Buffer
+	data := []interface{}{
+		map[string]interface{}{"name": "alice", "age": float64(30)},
+		map[string]interface{}{"name": "bob", "age": float64(25)},
+	}
+	cols := []Column{
+		{Header: "NAME", Path: "name"},
+		{Header: "AGE", Path: "age"},
+	}
+	if err := PrintTable(&buf, data, cols); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"NAME", "AGE", "alice", "bob", "30", "25"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintTable_WithTransform(t *testing.T) {
+	var buf bytes.Buffer
+	data := []interface{}{
+		map[string]interface{}{"endpoint": "https://etcd-0.etcd-discovery.clusters-test.svc:2379", "health": true, "took": "10ms"},
+		map[string]interface{}{"endpoint": "https://etcd-1.etcd-discovery.clusters-test.svc:2379", "health": false, "took": "5001ms", "error": "context deadline exceeded"},
+	}
+	cols := []Column{
+		{Header: "ENDPOINT", Path: "endpoint", Transform: TransformShortenEndpoint},
+		{Header: "HEALTH", Path: "health", Transform: TransformBool},
+		{Header: "TOOK", Path: "took"},
+		{Header: "ERROR", Path: "error", OmitEmpty: true},
+	}
+	if err := PrintTable(&buf, data, cols); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"ENDPOINT", "HEALTH", "TOOK", "ERROR", "etcd-0", "etcd-1", "true", "false", "10ms", "5001ms", "context deadline exceeded"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintTable_OmitEmptyColumn(t *testing.T) {
+	var buf bytes.Buffer
+	data := []interface{}{
+		map[string]interface{}{"name": "a", "error": ""},
+		map[string]interface{}{"name": "b"},
+	}
+	cols := []Column{
+		{Header: "NAME", Path: "name"},
+		{Header: "ERROR", Path: "error", OmitEmpty: true},
+	}
+	if err := PrintTable(&buf, data, cols); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "ERROR") {
+		t.Errorf("expected ERROR column to be omitted when all values empty:\n%s", out)
+	}
+}
+
+func TestPrintTable_WithCompute(t *testing.T) {
+	var buf bytes.Buffer
+	data := []interface{}{
+		map[string]interface{}{
+			"Endpoint": "https://etcd-0.svc:2379",
+			"Status": map[string]interface{}{
+				"leader": float64(1038), "version": "3.5.21",
+				"header": map[string]interface{}{"member_id": float64(4426)},
+			},
+		},
+		map[string]interface{}{
+			"Endpoint": "https://etcd-1.svc:2379",
+			"Status": map[string]interface{}{
+				"leader": float64(1038), "version": "3.5.21",
+				"header": map[string]interface{}{"member_id": float64(1038)},
+			},
+		},
+	}
+	cols := []Column{
+		{Header: "ENDPOINT", Path: "Endpoint", Transform: TransformShortenEndpoint},
+		{Header: "ROLE", Compute: func(item map[string]interface{}, allItems []interface{}) string {
+			var leaderID float64
+			for _, it := range allItems {
+				status := AsMap(AsMap(it)["Status"])
+				if l, ok := status["leader"].(float64); ok {
+					leaderID = l
+					break
+				}
+			}
+			header := AsMap(AsMap(item["Status"])["header"])
+			if memberID, ok := header["member_id"].(float64); ok && memberID == leaderID {
+				return "leader"
+			}
+			return "follower"
+		}},
+	}
+	if err := PrintTable(&buf, data, cols); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "leader") || !strings.Contains(out, "follower") {
+		t.Errorf("expected leader/follower roles:\n%s", out)
+	}
+}
+
+func TestPrintTable_NestedPath(t *testing.T) {
+	var buf bytes.Buffer
+	data := []interface{}{
+		map[string]interface{}{
+			"Status": map[string]interface{}{
+				"header": map[string]interface{}{"revision": float64(139328)},
+				"dbSize": float64(1273696256),
+			},
+		},
+	}
+	cols := []Column{
+		{Header: "REVISION", Path: "Status.header.revision", Transform: TransformUint64},
+		{Header: "DB SIZE", Path: "Status.dbSize", Transform: TransformBytes},
+	}
+	if err := PrintTable(&buf, data, cols); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "139328") || !strings.Contains(out, "1.2 GiB") {
+		t.Errorf("expected resolved nested values:\n%s", out)
+	}
+}
+
+func TestTransformShortenEndpoint(t *testing.T) {
+	tests := []struct {
+		input interface{}
+		want  string
+	}{
+		{"https://etcd-0.etcd-discovery.clusters-test.svc:2379", "etcd-0"},
+		{"https://etcd-1.etcd-discovery.clusters-test.svc:2379", "etcd-1"},
+		{"https://single-host:2379", "https://single-host:2379"},
+	}
+	for _, tt := range tests {
+		if got := TransformShortenEndpoint(tt.input); got != tt.want {
+			t.Errorf("TransformShortenEndpoint(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestTransformShortenURL(t *testing.T) {
+	tests := []struct {
+		input interface{}
+		want  string
+	}{
+		{"https://etcd-0.etcd-discovery.clusters-test.svc:2380", "etcd-0:2380"},
+		{"https://etcd-1.etcd-discovery.clusters-test.svc:2379", "etcd-1:2379"},
+	}
+	for _, tt := range tests {
+		if got := TransformShortenURL(tt.input); got != tt.want {
+			t.Errorf("TransformShortenURL(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

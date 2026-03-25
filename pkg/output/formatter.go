@@ -734,6 +734,208 @@ func PrintDiagnosis(w io.Writer, rootCause, confidence, severity string, evidenc
 	return nil
 }
 
+// shortenEndpoint extracts "etcd-N" from a full etcd endpoint URL.
+func shortenEndpoint(endpoint string) string {
+	if parts := strings.Split(endpoint, "."); len(parts) > 1 {
+		return strings.TrimPrefix(parts[0], "https://")
+	}
+	return endpoint
+}
+
+// FormatBytes converts a numeric byte count to a human-readable string.
+func FormatBytes(v interface{}) string {
+	var b float64
+	switch n := v.(type) {
+	case float64:
+		b = n
+	case int:
+		b = float64(n)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+
+	const (
+		KiB = 1024
+		MiB = 1024 * KiB
+		GiB = 1024 * MiB
+	)
+
+	switch {
+	case b >= GiB:
+		return fmt.Sprintf("%.1f GiB", b/GiB)
+	case b >= MiB:
+		return fmt.Sprintf("%.1f MiB", b/MiB)
+	case b >= KiB:
+		return fmt.Sprintf("%.1f KiB", b/KiB)
+	default:
+		return fmt.Sprintf("%.0f B", b)
+	}
+}
+
+// Column defines a column for PrintTable.
+type Column struct {
+	// Header is the column header displayed in the table.
+	Header string
+	// Path is a dot-separated path to extract the value from each item
+	// (e.g., "Status.version", "header.revision").
+	Path string
+	// Transform is an optional function to format the extracted value.
+	// If nil, the value is printed with fmt.Sprintf("%v", v).
+	Transform func(v interface{}) string
+	// Compute is an optional function that receives the full item and all items
+	// to produce a value. Used for derived fields (e.g., leader detection).
+	// If set, Path is ignored.
+	Compute func(item map[string]interface{}, allItems []interface{}) string
+	// OmitEmpty hides the column if all values are empty across all items.
+	OmitEmpty bool
+}
+
+// PrintTable renders a slice of items as a table using the given column definitions.
+// Falls back to JSON if data is not a slice or is empty.
+func PrintTable(w io.Writer, data interface{}, columns []Column) error {
+	items, ok := data.([]interface{})
+	if !ok || len(items) == 0 {
+		return PrintJSON(w, data)
+	}
+
+	// Determine which columns to include (handle OmitEmpty)
+	active := make([]bool, len(columns))
+	for i, col := range columns {
+		if !col.OmitEmpty {
+			active[i] = true
+			continue
+		}
+		for _, item := range items {
+			if val := resolveColumn(col, AsMap(item), items); val != "" {
+				active[i] = true
+				break
+			}
+		}
+	}
+
+	// Build headers
+	var headers []string
+	for i, col := range columns {
+		if active[i] {
+			headers = append(headers, col.Header)
+		}
+	}
+	t := NewTable(w, headers...)
+
+	// Build rows
+	for _, item := range items {
+		m := AsMap(item)
+		var row []string
+		for i, col := range columns {
+			if !active[i] {
+				continue
+			}
+			row = append(row, resolveColumn(col, m, items))
+		}
+		t.AddRow(row...)
+	}
+
+	return t.Flush()
+}
+
+func resolveColumn(col Column, item map[string]interface{}, allItems []interface{}) string {
+	if col.Compute != nil {
+		return col.Compute(item, allItems)
+	}
+
+	v := resolvePath(item, col.Path)
+	if col.Transform != nil {
+		return col.Transform(v)
+	}
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// resolvePath navigates a dot-separated path through nested maps.
+func resolvePath(m map[string]interface{}, path string) interface{} {
+	parts := strings.Split(path, ".")
+	var current interface{} = m
+	for _, part := range parts {
+		cm, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		current = cm[part]
+	}
+	return current
+}
+
+// --- Reusable transforms for Column.Transform ---
+
+// TransformShortenEndpoint shortens "https://etcd-0.etcd-discovery...svc:2379" to "etcd-0".
+func TransformShortenEndpoint(v interface{}) string {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	if parts := strings.Split(s, "."); len(parts) > 1 {
+		return strings.TrimPrefix(parts[0], "https://")
+	}
+	return s
+}
+
+// TransformShortenURL shortens a URL to "host:port" form.
+func TransformShortenURL(v interface{}) string {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	host, port := s, ""
+	if idx := strings.LastIndex(s, ":"); idx != -1 {
+		host = s[:idx]
+		port = s[idx:]
+	}
+	if parts := strings.SplitN(host, ".", 2); len(parts) > 1 {
+		host = parts[0]
+	}
+	return host + port
+}
+
+// TransformShortenURLList shortens a list of URLs.
+func TransformShortenURLList(v interface{}) string {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	parts := make([]string, 0, len(arr))
+	for _, u := range arr {
+		if s, ok := u.(string); ok {
+			parts = append(parts, TransformShortenURL(s))
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+// TransformBytes formats a numeric byte count as a human-readable string.
+func TransformBytes(v interface{}) string {
+	return FormatBytes(v)
+}
+
+// TransformBool formats a boolean value, treating nil as "false".
+func TransformBool(v interface{}) string {
+	if b, ok := v.(bool); ok {
+		return fmt.Sprintf("%v", b)
+	}
+	return "false"
+}
+
+// TransformUint64 formats a float64 as an integer string without scientific notation.
+func TransformUint64(v interface{}) string {
+	if f, ok := v.(float64); ok {
+		return fmt.Sprintf("%.0f", f)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 // SortItems sorts a list of Kubernetes items by namespace then name.
 func SortItems(items []interface{}) {
 	sort.Slice(items, func(i, j int) bool {
