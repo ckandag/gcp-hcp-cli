@@ -107,9 +107,34 @@ func PrintResourceTable(w io.Writer, data map[string]interface{}, resourceType s
 	case "configmaps", "cm":
 		return printConfigMapsTable(w, items)
 	case "persistentvolumeclaims", "pvc":
-		return printPVCTable(w, items)
+		return PrintTable(w, items, []Column{
+			{Header: "NAMESPACE", Path: "metadata.namespace"},
+			{Header: "NAME", Path: "metadata.name"},
+			{Header: "STATUS", Path: "status.phase"},
+			{Header: "VOLUME", Path: "spec.volumeName"},
+			{Header: "CAPACITY", Path: "status.capacity.storage"},
+			{Header: "ACCESS MODES", Path: "spec.accessModes", Transform: TransformAccessModes},
+			{Header: "STORAGECLASS", Path: "spec.storageClassName"},
+			{Header: "AGE", Path: "metadata.creationTimestamp", Transform: TransformAge},
+		})
 	case "persistentvolumes", "pv":
-		return printPVTable(w, items)
+		return PrintTable(w, items, []Column{
+			{Header: "NAME", Path: "metadata.name"},
+			{Header: "CAPACITY", Path: "spec.capacity.storage"},
+			{Header: "ACCESS MODES", Path: "spec.accessModes", Transform: TransformAccessModes},
+			{Header: "RECLAIM POLICY", Path: "spec.persistentVolumeReclaimPolicy"},
+			{Header: "STATUS", Path: "status.phase"},
+			{Header: "CLAIM", Compute: func(item map[string]interface{}, _ []interface{}) string {
+				claimRef := AsMap(item["spec"])
+				cr := AsMap(claimRef["claimRef"])
+				if ns := GetString(cr, "namespace"); ns != "" {
+					return ns + "/" + GetString(cr, "name")
+				}
+				return ""
+			}},
+			{Header: "STORAGECLASS", Path: "spec.storageClassName"},
+			{Header: "AGE", Path: "metadata.creationTimestamp", Transform: TransformAge},
+		})
 	default:
 		return printGenericTable(w, items, resourceType)
 	}
@@ -223,58 +248,6 @@ func printConfigMapsTable(w io.Writer, items []interface{}) error {
 			GetString(meta, "namespace"),
 			GetString(meta, "name"),
 			fmt.Sprintf("%d", len(data)),
-			age(GetString(meta, "creationTimestamp")),
-		)
-	}
-	return t.Flush()
-}
-
-func printPVCTable(w io.Writer, items []interface{}) error {
-	t := NewTable(w, "NAMESPACE", "NAME", "STATUS", "VOLUME", "CAPACITY", "ACCESS MODES", "STORAGECLASS", "AGE")
-	for _, item := range items {
-		m := AsMap(item)
-		meta := AsMap(m["metadata"])
-		spec := AsMap(m["spec"])
-		status := AsMap(m["status"])
-		capacity := AsMap(status["capacity"])
-
-		t.AddRow(
-			GetString(meta, "namespace"),
-			GetString(meta, "name"),
-			GetString(status, "phase"),
-			GetString(spec, "volumeName"),
-			GetString(capacity, "storage"),
-			formatAccessModes(spec["accessModes"]),
-			GetString(spec, "storageClassName"),
-			age(GetString(meta, "creationTimestamp")),
-		)
-	}
-	return t.Flush()
-}
-
-func printPVTable(w io.Writer, items []interface{}) error {
-	t := NewTable(w, "NAME", "CAPACITY", "ACCESS MODES", "RECLAIM POLICY", "STATUS", "CLAIM", "STORAGECLASS", "AGE")
-	for _, item := range items {
-		m := AsMap(item)
-		meta := AsMap(m["metadata"])
-		spec := AsMap(m["spec"])
-		status := AsMap(m["status"])
-		capacity := AsMap(spec["capacity"])
-		claimRef := AsMap(spec["claimRef"])
-
-		claim := ""
-		if ns := GetString(claimRef, "namespace"); ns != "" {
-			claim = ns + "/" + GetString(claimRef, "name")
-		}
-
-		t.AddRow(
-			GetString(meta, "name"),
-			GetString(capacity, "storage"),
-			formatAccessModes(spec["accessModes"]),
-			GetString(spec, "persistentVolumeReclaimPolicy"),
-			GetString(status, "phase"),
-			claim,
-			GetString(spec, "storageClassName"),
 			age(GetString(meta, "creationTimestamp")),
 		)
 	}
@@ -1005,6 +978,19 @@ func TransformBool(v interface{}) string {
 		return fmt.Sprintf("%v", b)
 	}
 	return "false"
+}
+
+// TransformAccessModes abbreviates Kubernetes access modes (e.g., ReadWriteOnce → RWO).
+func TransformAccessModes(v interface{}) string {
+	return formatAccessModes(v)
+}
+
+// TransformAge formats a Kubernetes timestamp as a human-readable duration.
+func TransformAge(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return age(s)
+	}
+	return ""
 }
 
 // TransformUint64 formats a float64 as an integer string without scientific notation.
